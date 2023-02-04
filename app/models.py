@@ -199,31 +199,27 @@ class Follows(object):
     @classmethod
     async def get_followers(cls, user_id: int) -> list[User] | None:
         ''' получаем подписчиков user(user_id) '''
-        query = ''' SELECT * FROM follows
-            WHERE followed_id = $1 '''
+        query = ''' SELECT * FROM follows 
+        INNER JOIN users ON follows.follower_id = users.id 
+        WHERE followed_id = $1 '''
         res = await _DataBase.execute_query(query, user_id, fetch=True)
         if res is None or len(res) == 0:
             return None
-        res = list(map(lambda x: await User.get_by_id(x[0]), res))
-        return res
+        return list(map(lambda x: User(x[2::]), res))
 
     @classmethod
     async def get_followings(cls, user_id: int) -> list[User] | None:
         ''' получаем подписки user(user_id) '''
-        query = ''' SELECT * FROM follows
-                    WHERE follower_id = $1 '''
+        query = ''' SELECT * FROM follows 
+        INNER JOIN users ON follows.followed_id = users.id 
+        WHERE follower_id = $1 '''
         res = await _DataBase.execute_query(query, user_id, fetch=True)
         if res is None or len(res) == 0:
             return None
-        res = list(map(lambda x: await User.get_by_id(x[1]), res))
-        return res
+        return list(map(lambda x: User(x[2::]), res))
 
 
 class Chat(object):
-    '''
-    класс описывающий сущность чата
-    '''
-
     def __init__(self,
                  id: int = 0,
                  name: str = '',
@@ -255,8 +251,17 @@ class Chat(object):
             return None
         return Chat(*res)
 
+    @classmethod
+    async def delete(cls, chat_id: int):
+        query = ''' DELETE chat WHERE id = $1 '''
+        return await _DataBase.execute_query(query, chat_id, execute=True)
 
-class User_in_chat(object):
+    @classmethod
+    async def get_chats_with_2_users(cls, f_user_id: int, s_user_id: int) -> list:
+        pass
+
+
+class UserInChat(object):
     @classmethod
     async def add(cls, user_id: int, chat_id: int):
         query = ''' INSERT INTO user_in_chat (user_id, chat_id)
@@ -266,20 +271,24 @@ class User_in_chat(object):
     @classmethod
     async def delete(cls, user_id: int, chat_id: int):
         pass
-        pass
-        pass
+
+    @classmethod
+    async def get_users_chats(cls, user_id: int) -> list | None:
+        query = ''' SELECT DISTINCT id, name, counter, image
+        FROM user_in_chat JOIN chat ON user_in_chat.chat_id = chat.id
+        WHERE user_in_chat.user_id = $1 '''
+        res = await _DataBase.execute_query(query, user_id, fetch=True)
+        if res is None or len(res) == 0:
+            return None
+        return list(map(lambda x: Chat(*x), res))
 
 
 class Message(object):
-    '''
-    класс описывающий сообщение
-    '''
-
     def __init__(self,
                  id: int = 0,
                  chat_id: int = 0,
                  user_id: int = 0,
-                 parent_id: Union[int, None] = None,
+                 parent_id: int | None = None,
                  mes_text: str = '',
                  sends_time: datetime = datetime.now()):
         self.id = id
@@ -294,7 +303,7 @@ class Message(object):
         # глубина сообщения в дереве
         self.depth = 0
         # автор сообщения
-        self.author: User = User.get_by_id(self.user_id)
+        self.author: User | None = None
 
     def tup(self) -> tuple:
         return (self.chat_id,
@@ -305,6 +314,21 @@ class Message(object):
 
     def __repr__(self):
         return f'<Message {self.id}>'
+
+    @classmethod
+    async def add(cls, message):
+        query = """ INSERT INTO message (chat_id, user_id, parent_id, mes_text, sends_time) 
+        VALUES ($1, $2, $3, '$4', '$5') """
+        return await _DataBase.execute_query(query, *message.tup(), execute=True)
+
+    @classmethod
+    async def get_all_by_chat_id(cls, chat_id: int) -> list | None:
+        query = ''' SELECT * FROM message 
+        WHERE chat_id = $1 ORDER BY sends_time'''
+        res = await _DataBase.execute_query(query, chat_id, fetch=True)
+        if res is None or len(res) == 0:
+            return None
+        return list(map(lambda x: Message(*x), res))
 
 
 class Post(object):
@@ -317,7 +341,7 @@ class Post(object):
                  user_id: int = 0,
                  title: str = '',
                  publication_date: datetime = datetime.now(),
-                 last_edit_date: Union[datetime, None] = None,
+                 last_edit_date: datetime | None = None,
                  post_text: str = '',
                  image: str = ''):
         self.id = id
@@ -328,12 +352,12 @@ class Post(object):
         self.post_text = post_text
         self.image = image
         # автор поста User (данные о нём непосредственно в запросе не получаются)
-        self.author: User = User.get_by_id(user_id)
+        self.author: User | None = None
         # коменты опять же получаем отдельно
         self.comments = None
 
     def tup(self) -> tuple:
-        last_edit_date: Union[str, None]
+        last_edit_date: str | None
         if self.last_edit_date is None:
             last_edit_date = None
         else:
@@ -347,6 +371,63 @@ class Post(object):
 
     def __repr__(self):
         return f'<Post {self.title}>'
+
+    @classmethod
+    async def add(cls, post):
+        query = ''' INSERT INTO post (user_id, title, publication_date, last_edit_date, post_text, image)  
+        VALUES ($1, '$2', '$3', '$4', '$5', '$6') '''
+        return await _DataBase.execute_query(query, *post.tup(), execute=True)
+
+    @classmethod
+    async def get_posts_by_user_id(cls, user_id: int) -> list | None:
+        query = ''' SELECT * FROM post 
+        WHERE user_id = $1 
+        ORDER BY publication_date DESC '''
+        res = await _DataBase.execute_query(query, user_id, fetch=True)
+        return list(map(lambda x: Post(*x), res))
+
+    @classmethod
+    async def get_followed_posts(cls, user_id: int) -> list | None:
+        query = ''' SELECT id, user_id, title, publication_date, last_edit_date, post_text, image 
+        FROM post INNER JOIN follows ON post.user_id =  follows.followed_id 
+        WHERE follows.follower_id = $1 
+        ORDER BY publication_date DESC'''
+        res = await _DataBase.execute_query(query, user_id, fetch=True)
+        return list(map(lambda x: Post(*x), res))
+
+    @classmethod
+    async def get_all_posts(cls) -> list | None:
+        query = ''' SELECT * FROM post
+        ORDER BY publication_date DESC '''
+        res = await _DataBase.execute_query(query, fetch=True)
+        if res is None or len(res) == 0:
+            return None
+        return list(map(lambda x: Post(*x), res))
+
+    @classmethod
+    async def get_post_by_id(cls, post_id: int):
+        query = ''' SELECT * FROM post WHERE id = $1 '''
+        res = await _DataBase.execute_query(query, post_id, fetchrow=True)
+        if res is None:
+            return None
+        return Post(* res)
+
+    @classmethod
+    async def update(cls, post):
+        query = ''' UPDATE post
+        SET title = '$1', post_text = '$2', last_edit_date = '$3',
+        WHERE id = $4 '''
+        return await _DataBase.execute_query(query, post.title, post.post_text,
+                                             post.last_edit_date, post.id, execute=True)
+
+    @classmethod
+    async def search_by_text(cls, text: str) -> list | None:
+        query = ''' SELECT * FROM post
+        WHERE title LIKE '%$1%' OR post_text LIKE '%$1%'  '''
+        res = await _DataBase.execute_query(query, text, fetch=True)
+        if res is None or len(res) == 0:
+            return None
+        return list(map(lambda x: Post(*x), res))
 
 
 class Comment(object):
@@ -366,10 +447,25 @@ class Comment(object):
         self.comment_text = comment_text
         self.sends_time = sends_time
         # автор коммента
-        self.author: User = User.get_by_id(self.commentator_id)
+        self.author: User | None = None
 
     def tup(self) -> tuple:
         return (self.post_id,
                 self.commentator_id,
                 self.comment_text,
                 str(self.sends_time),)
+
+    @classmethod
+    async def add(cls, comment):
+        query = """ INSERT INTO comment (post_id, commentator_id, parent_id, comment_text, sends_time) 
+        VALUES ($1, $2, $3, '$4', '$5') """
+        return await _DataBase.execute_query(query, comment.tup(), execute=True)
+
+    @classmethod
+    async def get_all_by_post_id(cls, post_id: int) -> list | None:
+        query = ''' SELECT * FROM comment WHERE post_id = $1 '''
+        res = await _DataBase.execute_query(query, post_id, fetch=True)
+        if res is None or len(res) == 0:
+            return None
+        return list(map(lambda x: Comment(*x), res))
+    

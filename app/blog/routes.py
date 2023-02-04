@@ -1,7 +1,9 @@
 
 from quart import render_template
+from quart_auth import current_user
 
 from app.blog import bp
+from app.models import Post
 
 
 @bp.route('/')
